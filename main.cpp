@@ -2,6 +2,38 @@
 #include "GLOBALS.h"
 #include <math.h>
 
+
+ISR(PCINT0_vect) {
+ // Determine state of each limit switch
+  if (digitalRead(LEFT_LIMIT_PIN) == HIGH) {
+    analogWrite(M1_PWM, 0);
+    analogWrite(M2_PWM, 0);
+    state = LIMIT;
+    Serial.println("Left limit reached");
+  }
+
+  if (digitalRead(RIGHT_LIMIT_PIN) == HIGH) {
+    analogWrite(M1_PWM, 0);
+    analogWrite(M2_PWM, 0);
+    state = LIMIT;
+    Serial.println("Right limit reached");
+  }
+
+  if (digitalRead(TOP_LIMIT_PIN) == HIGH) {
+    analogWrite(M1_PWM, 0);
+    analogWrite(M2_PWM, 0);
+    state = LIMIT;
+    Serial.println("Top limit reached");
+  }
+
+  if (digitalRead(BOTTOM_LIMIT_PIN) == HIGH) {
+    analogWrite(M1_PWM, 0);
+    analogWrite(M2_PWM, 0);
+    state = LIMIT;
+    Serial.println("Bottom limit reached");
+  }
+}
+
 void isrEnc1() {
   uint8_t a = digitalRead(ENC1_A);
   uint8_t b = digitalRead(ENC1_B);
@@ -32,125 +64,139 @@ void isrEnc2() {
   }
 }
 
-void moveStep(long stepA, long stepB, long remainder1, long remainder2) {
-  noInterrupts();
-  long startingCountA = encCount1;
-  long startingCountB = encCount2;
-  interrupts();
-  long speed = 0;
-  long currentCountA = startingCountA;
-  long currentCountB = startingCountB;
-
-  if (stepA != 0) {
-    analogWrite(M1_PWM, speed);
-    while (true) {
-      noInterrupts();
-      currentCountA = encCount1;
-      interrupts();
-      long localCountA = currentCountA - startingCountA;
-      if (localCountA >= stepA) {
-        analogWrite(M1_PWM, 0);
-        break;
-      }
-    }
-  }
-
-  if (stepB != 0) {
-    analogWrite(M2_PWM, speed);
-    while (true) {
-      noInterrupts();
-      currentCountB = encCount2;
-      interrupts();
-      long localCountB = currentCountB - startingCountB;
-      if (localCountB >= stepB) {
-        analogWrite(M2_PWM, 0);
-        break;
-      }
-    }
-  }
-}
-
-void move(float targetX, float targetY) {
-  bool targetReached = false;
-
-  if (state == IDLE) {
-    long moveA_mm = targetX + targetY;
-    long moveB_mm = targetX - targetY;
-    int direction1;
-    int direction2;
-
-    targetTicks1 = lround((moveA_mm / MM_PER_REV) * (float)COUNTS_PER_REV);
-    targetTicks2 = lround((moveB_mm / MM_PER_REV) * (float)COUNTS_PER_REV);
-
-    if (targetTicks1 >= 0) { direction1 = +1; }
-    else { direction1 = -1; }
-    if (targetTicks2 >= 0) { direction2 = +1; }
-    else { direction2 = -1; }
-
-    if (direction1 > 0) { digitalWrite(M1_DIR, HIGH); }
-    else { digitalWrite(M1_DIR, LOW); }
-    if (direction2 > 0) { digitalWrite(M2_DIR, HIGH); }
-    else { digitalWrite(M2_DIR, LOW); }
-
+bool move(float dist_X_mm, float dist_Y_mm) {
+    // Reset encoder counts
+    noInterrupts();
     encCount1 = 0;
     encCount2 = 0;
+    interrupts();
 
-    state = MOVING;
-  }
-  else if (state == MOVING) {
-    long totalCount1, totalCount2;
-    long remainder1Ticks, remainder2Ticks;
-    long remainder1MM, remainder2MM;
-    long remainder1MMabs, remainder2MMabs;
-    float stepX_mm, stepY_mm;
-    long stepA_enc, stepB_enc;
+    float dist_A_mm = dist_X_mm + dist_Y_mm;
+    float dist_B_mm = dist_X_mm - dist_Y_mm;
 
-    while (!targetReached) {
-      noInterrupts();
-        totalCount1 = encCount1;
-        totalCount2 = encCount2;
-      interrupts();
+    // Convert into encoder counts
+    long dist_A_enc = dist_A_mm * TICKS_PER_MM;
+    long dist_B_enc = dist_B_mm * TICKS_PER_MM;
 
-      if (abs(targetTicks1) > abs(totalCount1)) { remainder1Ticks = targetTicks1 - totalCount1; }
-      else { remainder1Ticks = 0; }
-      if (abs(targetTicks2) > abs(totalCount2)) { remainder2Ticks = targetTicks2 - totalCount2; }
-      else { remainder2Ticks = 0; }
+    bool direction_A = dist_A_enc >= 0 ? true : false;
+    bool direction_B = dist_B_enc >= 0 ? true : false;
 
-      remainder1MM = remainder1Ticks / TICKS_PER_MM;
-      remainder1MMabs = abs(remainder1MM);
-      remainder2MM = remainder2Ticks / TICKS_PER_MM;
-      remainder2MMabs = abs(remainder2MM);
+    // Set directions
+    digitalWrite(M1_DIR, direction_A ? HIGH : LOW);
+    digitalWrite(M2_DIR, direction_B ? HIGH : LOW);
 
-      if (remainder1MMabs > 0 && remainder2MMabs > 0) {
-        if (remainder1MMabs > 1 || remainder2MMabs > 1) {
-          if (remainder1MMabs >= remainder2MMabs) {
-            stepX_mm = 1.0f;
-            stepY_mm = remainder2MMabs / remainder1MMabs;
-          }
-          else if (remainder1MMabs < remainder2MMabs) {
-            stepY_mm = 1.0f;
-            stepX_mm = remainder1MMabs / remainder2MMabs;
-          }
-        } else {
-          stepX_mm = remainder1MMabs;
-          stepY_mm = remainder2MMabs;
+    bool target_reached = false;
+    // ---- Pure A translation ----
+    if (dist_B_enc == 0) {
+        analogWrite(M1_PWM, MOTOR_MAX_SPEED);
+        while (!target_reached) {
+            noInterrupts();
+            long enc_count = encCount1;
+            interrupts();
+            if (abs(enc_count) >= abs(dist_A_enc)) {
+                target_reached = true;
+            }
         }
-      } else {
-        stepX_mm = fmod(remainder1MMabs, 1.0f);
-        stepY_mm = fmod(remainder2MMabs, 1.0f);
-      }
-      
-      stepA_enc = (stepX_mm + stepY_mm) * TICKS_PER_MM;
-      stepB_enc = (stepX_mm - stepY_mm) * TICKS_PER_MM;
-
-      if (stepA_enc == 0 && stepB_enc == 0) {
-        targetReached = true;
-        break;
-      }
-
-      moveStep(stepA_enc, stepB_enc, remainder1Ticks, remainder2Ticks);
+        analogWrite(M1_PWM, 0);
     }
-    state = IDLE;
+    // ---- Pure B translation ----
+    else if (dist_A_enc == 0) {
+        analogWrite(M2_PWM, MOTOR_MAX_SPEED);
+        while (!target_reached) {
+            noInterrupts();
+            long enc_count = encCount2;
+            interrupts();
+            if (abs(enc_count) >= abs(dist_B_enc)) {
+                target_reached = true;
+            }
+        }
+        analogWrite(M2_PWM, 0);
+    }
+
+    // ---- Diagonal translation ---- 
+    else {
+        while (!target_reached) {
+            long rem_A_enc, rem_B_enc;
+            long step_A_enc, step_B_enc;
+
+            // Read encoders
+            noInterrupts();
+            long start_count_A = encCount1;
+            long start_count_B = encCount2;
+            interrupts();
+
+            rem_A_enc = abs(dist_A_enc) - abs(start_count_A);
+            rem_B_enc = abs(dist_B_enc) - abs(start_count_B);
+
+            // Determine which motor to use as a base
+            if (rem_A_enc >= rem_B_enc && rem_A_enc >= STEP_BASE_ENC) {
+                step_A_enc = STEP_BASE_ENC;
+                step_B_enc = (long)((float)rem_B_enc / rem_A_enc * STEP_BASE_ENC);
+            } 
+            else if (rem_B_enc > rem_A_enc && rem_B_enc >= STEP_BASE_ENC) {
+                step_B_enc = STEP_BASE_ENC;
+                step_A_enc = (long)((float)rem_A_enc / rem_B_enc * STEP_BASE_ENC);
+            }  
+            else {
+                step_A_enc = rem_A_enc;
+                step_B_enc = rem_B_enc;
+                target_reached = true;
+            }
+
+            // Start both motors
+            analogWrite(M1_PWM, MOTOR_MAX_SPEED);
+            analogWrite(M2_PWM, MOTOR_MAX_SPEED);
+            
+            long local_count_A = 0;
+            long local_count_B = 0;
+            bool A_flag = false;
+            bool B_flag = false;
+            while (!(A_flag && B_flag)) {
+                // Read encoders
+                noInterrupts();
+                local_count_A = encCount1 - start_count_A;
+                local_count_B = encCount2 - start_count_B;
+                interrupts();
+
+                if (local_count_A >= step_A_enc) {
+                    analogWrite(M1_PWM, 0);
+                    A_flag = true;
+                }
+                if (local_count_B >= step_B_enc) {
+                    analogWrite(M2_PWM, 0);
+                    B_flag = true;
+                }
+            }
+        }
+    }
+    Serial.print("Target Reached");
+    return true;
+}
+
+void fsm() {
+  if (state == IDLE) {
+    if (Serial.available() > 0) {
+      Serial.print("ΔX="); Serial.print(targetX);
+      Serial.print(" mm, ΔY="); Serial.print(targetY);
+      Serial.println(" mm");
+      state = MOVING;
+      move_complete = move(targetX, targetY);
+    }
+  } 
+  
+  else if (state == MOVING) {
+    if (move_complete) {
+      state = IDLE;
+      Serial.println("Enter ΔX and ΔY (mm):");
+      targetX = Serial.parseFloat();
+      targetY = Serial.parseFloat();
+    }
+  }
+
+  else if (state == LIMIT) {
+    while(1) {
+      asm("nop");
+    }
   }
 }
 
@@ -177,12 +223,11 @@ void setup() {
 
   analogWrite(M1_PWM, 0);
   analogWrite(M2_PWM, 0);
+
+  PCICR |= (1 << PCIE0);      // Enable Pin Change Interrupt group 0
+  PCMSK0 |= (1 << PCINT4) | (1 << PCINT5) | (1 << PCINT6) | (1 << PCINT7);
 }
 
 void loop() {
-  Serial.println("Enter ΔX and ΔY (mm):");
-  targetX = Serial.parseFloat();
-  targetY = Serial.parseFloat();
-  move(targetX, targetY);
-  Serial.println("Target Reached");
+  fsm();
 }
